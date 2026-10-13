@@ -1,0 +1,22 @@
+// 1. Audit trail: who called which tool and the RBAC decision
+traces
+| where message == "mcp-audit"
+| extend caller = tostring(customDimensions.caller), tool = tostring(customDimensions.tool),
+         decision = tostring(customDimensions.decision), method = tostring(customDimensions.method)
+| where method == "tools/call"
+| project timestamp, caller, tool, decision
+| order by timestamp desc
+
+// 2. Denied attempts per caller (security view)
+traces
+| where message == "mcp-audit" and tostring(customDimensions.decision) == "deny"
+| summarize denied = count() by caller = tostring(customDimensions.caller), tool = tostring(customDimensions.tool)
+
+// 3. Gateway health: volume, errors and latency per MCP API
+requests
+| summarize calls = count(), errors = countif(toint(resultCode) >= 400),
+            p95_ms = percentile(duration, 95) by api = tostring(customDimensions["API Name"])
+
+// 4. Backend failures from Jira / ServiceNow (MCP server side)
+exceptions | union (traces | where severityLevel >= 3)
+| summarize count() by cloud_RoleName, bin(timestamp, 15m)

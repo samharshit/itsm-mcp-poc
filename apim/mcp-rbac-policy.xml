@@ -1,0 +1,108 @@
+<!--
+  Generic MCP RBAC policy - apply the SAME policy to both APIs (/jira and /snow).
+  Replace {TENANT_ID} and {GATEWAY_APP_CLIENT_ID}; create Named Value "gateway-shared-secret" (secret).
+  1) validate Entra token  2) tool-level RBAC on tools/call  3) hide forbidden tools in tools/list
+  4) audit trace to Application Insights
+-->
+<policies>
+  <inbound>
+    <base />
+    <validate-jwt header-name="Authorization" require-scheme="Bearer"
+                  failed-validation-httpcode="401" output-token-variable-name="jwt">
+      <openid-config url="https://login.microsoftonline.com/{TENANT_ID}/v2.0/.well-known/openid-configuration" />
+      <audiences><audience>{GATEWAY_APP_CLIENT_ID}</audience></audiences>
+    </validate-jwt>
+
+    <!-- Tool -> roles allowed. Single place to change permissions. -->
+    <set-variable name="toolRoles" value="@{
+      return JObject.Parse(@"{
+        'snow_get_incident':     ['SNOW.Read'],
+        'snow_search_incidents': ['SNOW.Read'],
+        'snow_create_incident':  ['SNOW.Write'],
+        'snow_add_work_note':    ['SNOW.Write'],
+        'snow_resolve_incident': ['SNOW.Resolve'],
+        'jira_search_issues':    ['JIRA.Read'],
+        'jira_get_issue':        ['JIRA.Read'],
+        'jira_create_issue':     ['JIRA.Write'],
+        'jira_add_comment':      ['JIRA.Write'],
+        'jira_transition_issue': ['JIRA.Transition']
+      }").ToString();
+    }" />
+    <set-variable name="callerRoles" value="@(string.Join(",", ((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("roles", new string[0])))" />
+    <set-variable name="callerId" value="@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("azp", "unknown"))" />
+    <set-variable name="callerName" value="@(((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("preferred_username", ((Jwt)context.Variables["jwt"]).Claims.GetValueOrDefault("azp", "")))" />
+    <set-variable name="mcpMethod" value="@{
+      if (context.Request.Method != "POST") { return ""; }
+      var b = context.Request.Body?.As<JObject>(preserveContent: true);
+      return (string)b?["method"] ?? "";
+    }" />
+    <set-variable name="tool" value="@{
+      if ((string)context.Variables["mcpMethod"] != "tools/call") { return ""; }
+      var b = context.Request.Body.As<JObject>(preserveContent: true);
+      return (string)b["params"]?["name"] ?? "";
+    }" />
+    <set-variable name="allowed" value="@{
+      var tool = (string)context.Variables["tool"];
+      if (tool == "") { return true; }                       // initialize, tools/list, ping ...
+      var map = JObject.Parse((string)context.Variables["toolRoles"]);
+      var need = map[tool] as JArray;
+      if (need == null) { return false; }                      // unknown tool = deny by default
+      var have = ((string)context.Variables["callerRoles"]).Split(',');
+      return need.Any(r => have.Contains((string)r));
+    }" />
+
+    <trace source="mcp-gateway" severity="information">
+      <message>@("mcp-audit")</message>
+      <metadata name="caller" value="@((string)context.Variables["callerName"])" />
+      <metadata name="method" value="@((string)context.Variables["mcpMethod"])" />
+      <metadata name="tool" value="@((string)context.Variables["tool"])" />
+      <metadata name="decision" value="@(((bool)context.Variables["allowed"]) ? "allow" : "deny")" />
+    </trace>
+
+    <choose>
+      <when condition="@(!(bool)context.Variables["allowed"])">
+        <return-response>
+          <set-status code="403" reason="Forbidden" />
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-body>@{
+            var b = context.Request.Body.As<JObject>(preserveContent: true);
+            return new JObject(
+              new JProperty("jsonrpc", "2.0"),
+              new JProperty("id", b["id"]),
+              new JProperty("error", new JObject(
+                 new JProperty("code", -32001),
+                 new JProperty("message", "RBAC: '" + context.Variables["tool"] + "' not permitted for your role")))
+            ).ToString();
+          }</set-body>
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- rate-limit-by-key is NOT available in APIM Consumption tier. Add it back on Developer/Basic v2+ -->
+    <set-header name="x-from-gateway" exists-action="override"><value>{{gateway-shared-secret}}</value></set-header>
+    <set-header name="x-caller" exists-action="override"><value>@((string)context.Variables["callerName"])</value></set-header>
+    <set-header name="Authorization" exists-action="delete" />
+  </inbound>
+  <backend><base /></backend>
+  <outbound>
+    <base />
+    <!-- Least privilege discovery: caller only SEES the tools it may call -->
+    <choose>
+      <when condition="@((string)context.Variables["mcpMethod"] == "tools/list" && context.Response.StatusCode == 200)">
+        <set-body>@{
+          var body = context.Response.Body.As<JObject>(preserveContent: true);
+          var map  = JObject.Parse((string)context.Variables["toolRoles"]);
+          var have = ((string)context.Variables["callerRoles"]).Split(',');
+          var tools = (JArray)body["result"]["tools"];
+          var keep = new JArray(tools.Where(t => {
+              var need = map[(string)t["name"]] as JArray;
+              return need != null && need.Any(r => have.Contains((string)r));
+          }));
+          body["result"]["tools"] = keep;
+          return body.ToString();
+        }</set-body>
+      </when>
+    </choose>
+  </outbound>
+  <on-error><base /></on-error>
+</policies>
