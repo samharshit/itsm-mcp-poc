@@ -9,7 +9,7 @@ AUTH = (os.environ["SN_USER"], os.environ["SN_PASSWORD"])
 GW_SECRET = os.environ.get("GATEWAY_SHARED_SECRET", "")
 FIELDS = "sys_id,number,short_description,state,priority,assigned_to,work_notes"
 
-mcp = FastMCP("servicenow-mcp", stateless_http=True, json_response=True)
+mcp = FastMCP("servicenow-mcp", host="0.0.0.0", stateless_http=True, json_response=True)
 client = httpx.Client(base_url=f"{SN}/api/now/table", auth=AUTH, timeout=20,
                       headers={"Accept": "application/json"})
 
