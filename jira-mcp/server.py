@@ -9,7 +9,7 @@ AUTH = (os.environ["JIRA_EMAIL"], os.environ["JIRA_API_TOKEN"])
 GW_SECRET = os.environ.get("GATEWAY_SHARED_SECRET", "")
 PROJECT = os.environ.get("JIRA_PROJECT_KEY", "OPS")
 
-mcp = FastMCP("jira-mcp", stateless_http=True, json_response=True)
+mcp = FastMCP("jira-mcp", host="0.0.0.0", stateless_http=True, json_response=True)
 client = httpx.Client(base_url=JIRA, auth=AUTH, timeout=20,
                       headers={"Accept": "application/json"})
 
