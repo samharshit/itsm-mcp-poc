@@ -1,17 +1,22 @@
-# Free image build: GitHub Actions -> GitHub Container Registry (ghcr.io). No Azure Container Registry cost.
+# Free image build: GitHub Actions -> GitHub Container Registry (ghcr.io).
 name: build-mcp-images
 on: { push: { branches: [main] }, workflow_dispatch: {} }
 permissions: { contents: read, packages: write }
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy: { matrix: { app: [jira-mcp, servicenow-mcp] } }
+    strategy: { matrix: { app: [jira-mcp, servicenow-mcp, ui] } }
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3
-        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+        with:
+          {
+            registry: ghcr.io,
+            username: "${{ github.actor }}",
+            password: "${{ secrets.GITHUB_TOKEN }}",
+          }
       - uses: docker/build-push-action@v6
         with:
           context: ./${{ matrix.app }}
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}:latest
+          tags: ghcr.io/${{ github.repository_owner }}/${{ matrix.app == 'ui' && 'itsm-demo-ui' || matrix.app }}:latest

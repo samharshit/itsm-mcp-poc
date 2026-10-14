@@ -1,0 +1,67 @@
+<!doctype html><html><head><meta charset="utf-8"><title>ITSM MCP Demo</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#f3f5f9;color:#1f2937}
+header{background:#1f4e79;color:#fff;padding:14px 24px;display:flex;align-items:center;gap:16px}
+header h1{font-size:19px;margin:0;flex:1}select,button,input,textarea{font:inherit}
+select{padding:7px 10px;border-radius:6px;border:0}
+main{display:grid;grid-template-columns:1.1fr 1fr;gap:16px;padding:16px 24px}
+.card{background:#fff;border-radius:10px;box-shadow:0 1px 3px #0002;padding:16px}
+h2{font-size:16px;margin:0 0 10px;color:#1f4e79}
+.tools{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tool{border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-bottom:8px;cursor:pointer}
+.tool.ok{border-left:5px solid #16a34a}.tool.no{border-left:5px solid #dc2626;opacity:.6}
+.tool b{font-size:13px}.tool small{display:block;color:#6b7280;font-size:11px}
+.badge{float:right;font-size:11px;padding:1px 7px;border-radius:9px}
+.ok .badge{background:#dcfce7;color:#166534}.no .badge{background:#fee2e2;color:#991b1b}
+label{display:block;font-size:12px;margin-top:6px;color:#374151}
+input,textarea{width:100%;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px}
+button{background:#1f4e79;color:#fff;border:0;border-radius:6px;padding:8px 14px;margin-top:10px;cursor:pointer}
+button:disabled{opacity:.5}pre{background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px;max-height:280px;overflow:auto;font-size:12px;white-space:pre-wrap}
+.dec{font-weight:600;padding:6px 10px;border-radius:6px;margin:8px 0}
+.dec.ALLOWED{background:#dcfce7;color:#166534}.dec.BLOCKED{background:#fee2e2;color:#991b1b}.dec.OTHER{background:#fef3c7;color:#92400e}
+table{width:100%;border-collapse:collapse;font-size:12px}td,th{padding:4px 6px;border-bottom:1px solid #eee;text-align:left}
+.chat{min-height:120px}.step{font-size:12px;margin:2px 0}.full{grid-column:1/3}
+</style></head><body>
+<header><h1>ITSM Multi-MCP Demo &mdash; Jira + ServiceNow via APIM gateway with Entra RBAC</h1>
+<span>Acting as:</span><select id="persona"></select></header>
+<main>
+ <div class="card"><h2>Tools this identity can use</h2>
+  <p style="font-size:12px;color:#6b7280;margin-top:0">Green = gateway exposes the tool to this persona. Red = hidden by RBAC (you can still click it to prove the gateway blocks it).</p>
+  <div class="tools"><div><b>Jira</b><div id="jira"></div></div><div><b>ServiceNow</b><div id="snow"></div></div></div></div>
+ <div class="card"><h2 id="tname">Select a tool</h2><div id="form"></div>
+  <button id="run" disabled>Run tool</button><div id="decision"></div><pre id="out">Results appear here.</pre></div>
+ <div class="card" id="chatcard"><h2>Ask the AI agent</h2>
+  <textarea id="msg" rows="3">Find active P1 incidents in ServiceNow and check if Jira has related issues.</textarea>
+  <button id="send">Send</button><div id="steps"></div><pre id="answer" class="chat">The agent only sees the tools allowed for the selected persona.</pre></div>
+ <div class="card"><h2>Gateway audit (this session)</h2><table><thead><tr><th>Time</th><th>Persona</th><th>Tool</th><th>Decision</th></tr></thead><tbody id="audit"></tbody></table></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);let sel=null,tools={};
+const DEFAULTS={jql:'project = OPS ORDER BY created DESC',query:'active=true',number:'',issue_type:'Task',limit:5,max_results:5};
+async function j(u,o){const r=await fetch(u,o);return r.json()}
+async function init(){const p=await j('/api/personas');for(const[k,v]of Object.entries(p)){if(k[0]=='_')continue;$('persona').add(new Option(v,k))}
+ if(!p._chat)$('chatcard').innerHTML='<h2>Ask the AI agent</h2><p style="font-size:13px">Optional: set AOAI_ENDPOINT / AOAI_KEY on the UI container to enable the agent chat.</p>';
+ $('persona').onchange=load;load()}
+async function load(){$('jira').innerHTML=$('snow').innerHTML='Loading...';tools=await j('/api/tools/'+$('persona').value);
+ for(const s of['jira','snow']){$(s).innerHTML='';for(const t of tools[s]){const d=document.createElement('div');d.className='tool '+(t.allowed?'ok':'no');
+ d.innerHTML=`<span class="badge">${t.allowed?'allowed':'blocked'}</span><b>${t.name}</b><small>${t.description||'Not visible for this role'}</small>`;
+ d.onclick=()=>pick(s,t);$(s).appendChild(d)}}refreshAudit()}
+function pick(s,t){sel={server:s,tool:t};$('tname').textContent=t.name;$('run').disabled=false;
+ let props=(t.schema&&t.schema.properties)||{};if(!t.allowed)props=guess(t.name);
+ $('form').innerHTML=Object.keys(props).map(k=>`<label>${k}</label><input data-k="${k}" data-t="${props[k].type||'string'}" value="${DEFAULTS[k]??''}">`).join('')||'<p>No inputs.</p>'}
+function guess(n){const m={snow_resolve_incident:['number','close_notes'],jira_transition_issue:['issue_key','to_status'],jira_create_issue:['summary','description'],
+ snow_add_work_note:['number','note'],snow_create_incident:['short_description'],jira_add_comment:['issue_key','comment'],snow_get_incident:['number'],jira_get_issue:['issue_key']};
+ return Object.fromEntries((m[n]||[]).map(k=>[k,{type:'string'}]))}
+$('run').onclick=async()=>{const args={};document.querySelectorAll('#form input').forEach(i=>{let v=i.value;if(v==='')return;
+ if(i.dataset.t=='integer')v=parseInt(v);if(i.dataset.t=='array')v=v.split(',').map(x=>x.trim());args[i.dataset.k]=v});
+ $('out').textContent='Running...';$('decision').innerHTML='';
+ const r=await j('/api/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({persona:$('persona').value,server:sel.server,tool:sel.tool.name,args})});
+ const c=r.decision.startsWith('ALLOWED')?'ALLOWED':r.decision.startsWith('BLOCKED')?'BLOCKED':'OTHER';
+ $('decision').innerHTML=`<div class="dec ${c}">${r.decision}</div>`;$('out').textContent=JSON.stringify(r.result,null,2);refreshAudit()}
+$('send')&&($('send').onclick=async()=>{$('answer').textContent='Thinking...';$('steps').innerHTML='';
+ const r=await j('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({persona:$('persona').value,message:$('msg').value})});
+ $('steps').innerHTML=(r.steps||[]).map(s=>`<div class="step">&#128295; ${s.tool} &rarr; <b>${s.decision}</b></div>`).join('');$('answer').textContent=r.answer;refreshAudit()})
+async function refreshAudit(){const a=await j('/api/audit');$('audit').innerHTML=a.map(x=>`<tr><td>${x.time}</td><td>${x.persona}</td><td>${x.tool}</td><td>${x.decision}</td></tr>`).join('')}
+init();
+</script></body></html>
